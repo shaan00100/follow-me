@@ -1,0 +1,525 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#102b50">
+<title>Follow Me</title>
+
+<link href="https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.css" rel="stylesheet">
+<script src="https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.js"></script>
+
+<style>
+* {box-sizing:border-box}
+body {
+ margin:0;
+ font-family:Arial,sans-serif;
+ background:#f2f5f9;
+ color:#172b45;
+}
+header {
+ background:#102b50;
+ color:white;
+ padding:16px;
+}
+header h2 {margin:0;font-size:22px}
+header p {margin:5px 0 0;font-size:12px;color:#c8d8eb}
+.controls {
+ padding:12px;
+ display:flex;
+ flex-wrap:wrap;
+ gap:8px;
+}
+button {
+ border:0;
+ border-radius:7px;
+ padding:12px 15px;
+ font-weight:bold;
+ cursor:pointer;
+ background:#e0e9f4;
+ color:#102b50;
+}
+.start {background:#16834b;color:white}
+.stop {background:#d93636;color:white}
+.area {background:#087cff;color:white}
+#map {
+ height:58vh;
+ min-height:350px;
+ width:100%;
+}
+.panel {
+ background:white;
+ margin:12px;
+ padding:14px;
+ border-radius:10px;
+}
+.panel h3 {margin:0 0 10px}
+#status {font-size:14px}
+input {
+ padding:11px;
+ border:1px solid #ccd5df;
+ border-radius:6px;
+ width:100%;
+ margin:6px 0;
+}
+.item {
+ padding:10px;
+ border-bottom:1px solid #eee;
+ font-size:14px;
+}
+.small {font-size:12px;color:#63758a}
+</style>
+</head>
+
+<body>
+
+<header>
+<h2>📍 Follow Me</h2>
+<p>Your personal GPS tracker</p>
+</header>
+
+<div class="controls">
+<button onclick="changeMap('street')">STREET</button>
+<button onclick="changeMap('satellite')">SATELLITE</button>
+<button class="start" onclick="startTracking()">▶ START</button>
+<button class="stop" onclick="stopTracking()">■ STOP</button>
+</div>
+
+<div id="map"></div>
+
+<div class="panel">
+<h3>Journey status</h3>
+<div id="status">Ready to track</div>
+<p id="distance">Distance: 0 m</p>
+<p id="duration">Duration: 0 min</p>
+</div>
+
+<div class="panel">
+<h3>Mark an area</h3>
+<p class="small">Press the button and tap points on the map to draw your area.</p>
+<button class="area" onclick="startArea()">＋ MARK AREA</button>
+<button onclick="finishArea()">SAVE AREA</button>
+<button onclick="cancelArea()">CANCEL</button>
+<p id="areaStatus" class="small">No area being drawn.</p>
+</div>
+
+<div class="panel">
+<h3>Saved areas</h3>
+<div id="areasList">No saved areas yet.</div>
+</div>
+
+<div class="panel">
+<h3>Travel history</h3>
+<div id="historyList">No journeys recorded yet.</div>
+</div>
+
+<script>
+const streetStyle = 'https://tiles.openfreemap.org/styles/liberty';
+
+const satelliteStyle = {
+ version:8,
+ sources:{
+  satellite:{
+   type:'raster',
+   tiles:[
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+   ],
+   tileSize:256,
+   attribution:'Tiles © Esri'
+  }
+ },
+ layers:[{
+  id:'satellite',
+  type:'raster',
+  source:'satellite'
+ }]
+};
+
+let map;
+let tracking=false;
+let watchId=null;
+let points=[];
+let distance=0;
+let startTime=null;
+let currentArea=[];
+let drawingArea=false;
+let tripTimer=null;
+
+let routes=JSON.parse(localStorage.getItem('fm_routes') || '[]');
+let areas=JSON.parse(localStorage.getItem('fm_areas') || '[]');
+
+function createMap() {
+ map=new maplibregl.Map({
+  container:'map',
+  style:streetStyle,
+  center:[77.5946,12.9716],
+  zoom:12
+ });
+
+ map.addControl(new maplibregl.NavigationControl());
+ map.addControl(new maplibregl.GeolocateControl({
+  positionOptions:{enableHighAccuracy:true},
+  trackUserLocation:true
+ }));
+
+ map.on('load',setupLayers);
+
+ map.on('click',e=>{
+  if(!drawingArea)return;
+  currentArea.push([e.lngLat.lng,e.lngLat.lat]);
+  updateLayers();
+  document.getElementById('areaStatus').innerText=
+   currentArea.length+' boundary points selected';
+ });
+}
+
+function setupLayers() {
+ if(!map.getSource('currentRoute')) {
+  map.addSource('currentRoute',{
+   type:'geojson',
+   data:{type:'FeatureCollection',features:[]}
+  });
+
+  map.addLayer({
+   id:'currentRouteLine',
+   type:'line',
+   source:'currentRoute',
+   paint:{'line-color':'#087cff','line-width':5}
+  });
+ }
+
+ if(!map.getSource('savedRoutes')) {
+  map.addSource('savedRoutes',{
+   type:'geojson',
+   data:{type:'FeatureCollection',features:[]}
+  });
+
+  map.addLayer({
+   id:'savedRouteLines',
+   type:'line',
+   source:'savedRoutes',
+   paint:{'line-color':'#e68a20','line-width':3}
+  });
+ }
+
+ if(!map.getSource('savedAreas')) {
+  map.addSource('savedAreas',{
+   type:'geojson',
+   data:{type:'FeatureCollection',features:[]}
+  });
+
+  map.addLayer({
+   id:'savedAreaFill',
+   type:'fill',
+   source:'savedAreas',
+   paint:{
+    'fill-color':'#16834b',
+    'fill-opacity':0.2
+   }
+  });
+
+  map.addLayer({
+   id:'savedAreaLine',
+   type:'line',
+   source:'savedAreas',
+   paint:{
+    'line-color':'#16834b',
+    'line-width':3
+   }
+  });
+ }
+
+ if(!map.getSource('drawingArea')) {
+  map.addSource('drawingArea',{
+   type:'geojson',
+   data:{type:'FeatureCollection',features:[]}
+  });
+
+  map.addLayer({
+   id:'drawingAreaLine',
+   type:'line',
+   source:'drawingArea',
+   paint:{'line-color':'#087cff','line-width':3}
+  });
+ }
+
+ updateLayers();
+}
+
+function updateLayers() {
+ if(!map || !map.isStyleLoaded())return;
+
+ const currentFeature=points.length>0?[{
+  type:'Feature',
+  geometry:{type:'LineString',coordinates:points}
+ }]:[];
+
+ const savedFeatures=routes.filter(r=>r.points.length>1).map(r=>({
+  type:'Feature',
+  geometry:{type:'LineString',coordinates:r.points}
+ }));
+
+ const areaFeatures=areas.map(a=>({
+  type:'Feature',
+  properties:{name:a.name},
+  geometry:{
+   type:'Polygon',
+   coordinates:[[...a.points,a.points[0]]]
+  }
+ }));
+
+ const drawingFeatures=currentArea.length>1?[{
+  type:'Feature',
+  geometry:{
+   type:'LineString',
+   coordinates:currentArea
+  }
+ }]:[];
+
+ map.getSource('currentRoute')?.setData({
+  type:'FeatureCollection',features:currentFeature
+ });
+
+ map.getSource('savedRoutes')?.setData({
+  type:'FeatureCollection',features:savedFeatures
+ });
+
+ map.getSource('savedAreas')?.setData({
+  type:'FeatureCollection',features:areaFeatures
+ });
+
+ map.getSource('drawingArea')?.setData({
+  type:'FeatureCollection',features:drawingFeatures
+ });
+}
+
+function changeMap(type) {
+ map.setStyle(type==='street'?streetStyle:satelliteStyle);
+ map.once('style.load',setupLayers);
+}
+
+function calculateDistance(a,b) {
+ const R=6371000;
+ const rad=x=>x*Math.PI/180;
+ const dLat=rad(b[1]-a[1]);
+ const dLon=rad(b[0]-a[0]);
+ const x=Math.sin(dLat/2)**2+
+ Math.cos(rad(a[1]))*Math.cos(rad(b[1]))*
+ Math.sin(dLon/2)**2;
+ return 2*R*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));
+}
+
+function startTracking() {
+ if(tracking)return;
+
+ if(!navigator.geolocation) {
+  alert('GPS is not supported by this browser.');
+  return;
+ }
+
+ if(!window.isSecureContext) {
+  alert('Open Follow Me using its HTTPS address.');
+  return;
+ }
+
+ tracking=true;
+ points=[];
+ distance=0;
+ startTime=Date.now();
+
+ updateLayers();
+
+ document.getElementById('status').innerText='Waiting for GPS...';
+
+ watchId=navigator.geolocation.watchPosition(position=>{
+  if(!tracking)return;
+
+  const p=[
+   position.coords.longitude,
+   position.coords.latitude
+  ];
+
+  if(points.length>0) {
+   const d=calculateDistance(points[points.length-1],p);
+   if(d<3)return;
+   distance+=d;
+  }
+
+  points.push(p);
+  updateLayers();
+
+  map.easeTo({center:p,zoom:16});
+
+  document.getElementById('status').innerText='Recording journey';
+  document.getElementById('distance').innerText=
+   'Distance: '+(distance>=1000?
+   (distance/1000).toFixed(2)+' km':
+   Math.round(distance)+' m');
+
+  document.getElementById('duration').innerText=
+   'Duration: '+Math.floor((Date.now()-startTime)/60000)+' min';
+
+ },error=>{
+  document.getElementById('status').innerText='GPS error: '+error.message;
+ },{
+  enableHighAccuracy:true,
+  maximumAge:1000,
+  timeout:20000
+ });
+
+}
+
+function stopTracking() {
+ if(!tracking)return;
+
+ tracking=false;
+
+ if(watchId!==null) {
+  navigator.geolocation.clearWatch(watchId);
+  watchId=null;
+ }
+
+ if(points.length>1) {
+  routes.push({
+   date:new Date().toLocaleString(),
+   points:[...points],
+   distance:distance
+  });
+
+  localStorage.setItem('fm_routes',JSON.stringify(routes));
+ }
+
+ document.getElementById('status').innerText=
+  'Journey stopped. '+points.length+' GPS points recorded.';
+
+ renderHistory();
+ updateLayers();
+}
+
+function clearCurrent() {
+ if(tracking)stopTracking();
+ points=[];
+ distance=0;
+ updateLayers();
+}
+
+function startArea() {
+ drawingArea=true;
+ currentArea=[];
+ document.getElementById('areaStatus').innerText=
+  'Tap at least 3 points on the map to draw an area.';
+ updateLayers();
+}
+
+function finishArea() {
+ if(!drawingArea || currentArea.length<3) {
+  alert('Select at least 3 points on the map.');
+  return;
+ }
+
+ const name=prompt('Enter area name:');
+ if(!name || !name.trim())return;
+
+ areas.push({
+  name:name.trim(),
+  points:[...currentArea]
+ });
+
+ localStorage.setItem('fm_areas',JSON.stringify(areas));
+
+ currentArea=[];
+ drawingArea=false;
+
+ updateLayers();
+ renderAreas();
+
+ document.getElementById('areaStatus').innerText='Area saved successfully.';
+}
+
+function cancelArea() {
+ drawingArea=false;
+ currentArea=[];
+ updateLayers();
+ document.getElementById('areaStatus').innerText='Area drawing cancelled.';
+}
+
+function renderAreas() {
+ const box=document.getElementById('areasList');
+
+ if(!areas.length) {
+  box.innerText='No saved areas yet.';
+  return;
+ }
+
+ box.innerHTML='';
+
+ areas.forEach((a,i)=>{
+  const item=document.createElement('div');
+  item.className='item';
+  const title=document.createElement('b');
+  title.textContent=a.name+' ';
+  const button=document.createElement('button');
+  button.textContent='DELETE';
+  button.onclick=()=>deleteArea(i);
+  item.append(title,button);
+  box.appendChild(item);
+ });
+}
+
+function deleteArea(i) {
+ areas.splice(i,1);
+ localStorage.setItem('fm_areas',JSON.stringify(areas));
+ renderAreas();
+ updateLayers();
+}
+
+function renderHistory() {
+ const box=document.getElementById('historyList');
+
+ if(!routes.length) {
+  box.innerText='No journeys recorded yet.';
+  return;
+ }
+
+ box.innerHTML='';
+
+ routes.forEach((r,i)=>{
+  const item=document.createElement('div');
+  item.className='item';
+
+  const title=document.createElement('b');
+  title.textContent='Journey '+(i+1);
+
+  const detail=document.createElement('p');
+  detail.textContent=r.date+' | '+(r.distance/1000).toFixed(2)+' km';
+
+  const view=document.createElement('button');
+  view.textContent='VIEW ROUTE';
+  view.onclick=()=>{
+   const bounds=new maplibregl.LngLatBounds();
+   r.points.forEach(p=>bounds.extend(p));
+   map.fitBounds(bounds,{padding:50});
+  };
+
+  const del=document.createElement('button');
+  del.textContent='DELETE';
+  del.onclick=()=>{
+   routes.splice(i,1);
+   localStorage.setItem('fm_routes',JSON.stringify(routes));
+   renderHistory();
+   updateLayers();
+  };
+
+  item.append(title,detail,view,del);
+  box.appendChild(item);
+ });
+}
+
+createMap();
+renderAreas();
+renderHistory();
+</script>
+
+</body>
+</html>
