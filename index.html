@@ -141,6 +141,7 @@ let tracking=false;
 let watchId=null;
 let points=[];
 let viewedRoutePoints=[];
+let viewedAreaPoints=[];
 let distance=0;
 let startTime=null;
 let currentArea=[];
@@ -276,20 +277,17 @@ function updateLayers() {
     geometry:{type:'LineString',coordinates:viewedRoutePoints}
   }] : [];
 
-  const savedFeatures = routes.filter(r=>r.points.length>1).map(r=>({
-    type:'Feature',
-    geometry:{type:'LineString',coordinates:r.points}
-  }));
+  const savedFeatures = [];
 
-  const areaFeatures = areas.filter(a=>a.points && a.points.length>=3).map(a=>({
-    type:'Feature',
-    properties:{name:a.name},
-    geometry:{
-      type:'Polygon',
-      coordinates:[[...a.points,a.points[0]]]
-    }
-  }));
-
+  const areaFeatures = viewedAreaPoints.length>=3 ? [{
+  type:'Feature',
+  properties:{name:'Selected Area'},
+  geometry:{
+    type:'Polygon',
+    coordinates:[[...viewedAreaPoints,viewedAreaPoints[0]]]
+  }
+}] : [];
+ 
   const drawingFeatures = currentArea.length>1 ? [{
     type:'Feature',
     geometry:{type:'LineString',coordinates:currentArea}
@@ -488,14 +486,20 @@ function renderAreas() {
     title.style.cursor='pointer';
 
     title.onclick=()=>{
-      const bounds=new maplibregl.LngLatBounds();
+  if(viewedAreaPoints===a.points) {
+    viewedAreaPoints=[];
+    updateLayers();
+    return;
+  }
 
-      a.points.forEach(p=>bounds.extend(p));
+  viewedAreaPoints=a.points;
 
-      map.fitBounds(bounds,{padding:60});
-      updateLayers();
-    };
+  const bounds=new maplibregl.LngLatBounds();
+  a.points.forEach(p=>bounds.extend(p));
 
+  map.fitBounds(bounds,{padding:60});
+  updateLayers();
+};
     const button=document.createElement('button');
     button.textContent='DELETE';
     button.onclick=()=>deleteArea(i);
