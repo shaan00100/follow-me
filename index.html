@@ -140,6 +140,7 @@ let map;
 let tracking=false;
 let watchId=null;
 let points=[];
+let viewedRoutePoints=[];
 let distance=0;
 let startTime=null;
 let currentArea=[];
@@ -250,10 +251,14 @@ function setupLayers() {
 function updateLayers() {
  if(!map || !map.isStyleLoaded())return;
 
- const currentFeature=points.length>0?[{
+ const displayPoints = viewedRoutePoints.length > 1
+  ? viewedRoutePoints
+  : points;
+
+ const currentFeature = displayPoints.length > 1 ? [{
   type:'Feature',
-  geometry:{type:'LineString',coordinates:points}
- }]:[];
+  geometry:{type:'LineString',coordinates:displayPoints}
+ }] : [];
 
  const savedFeatures=routes.filter(r=>r.points.length>1).map(r=>({
   type:'Feature',
