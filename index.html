@@ -175,6 +175,7 @@ function createMap() {
  });
 }
 
+
 function setupLayers() {
  if(!map.getSource('currentRoute')) {
   map.addSource('currentRoute',{
@@ -186,6 +187,20 @@ function setupLayers() {
    id:'currentRouteLine',
    type:'line',
    source:'currentRoute',
+   paint:{'line-color':'#16a34a','line-width':5}
+  });
+ }
+
+ if(!map.getSource('historyRoute')) {
+  map.addSource('historyRoute',{
+   type:'geojson',
+   data:{type:'FeatureCollection',features:[]}
+  });
+
+  map.addLayer({
+   id:'historyRouteLine',
+   type:'line',
+   source:'historyRoute',
    paint:{'line-color':'#087cff','line-width':5}
   });
  }
@@ -249,54 +264,56 @@ function setupLayers() {
 }
 
 function updateLayers() {
- if(!map || !map.isStyleLoaded())return;
+  if(!map || !map.isStyleLoaded()) return;
 
- const displayPoints = viewedRoutePoints.length > 1
-  ? viewedRoutePoints
-  : points;
+  const currentFeature = points.length > 1 ? [{
+    type:'Feature',
+    geometry:{type:'LineString',coordinates:points}
+  }] : [];
 
- const currentFeature = displayPoints.length > 1 ? [{
-  type:'Feature',
-  geometry:{type:'LineString',coordinates:displayPoints}
- }] : [];
+  const historyFeature = viewedRoutePoints.length > 1 ? [{
+    type:'Feature',
+    geometry:{type:'LineString',coordinates:viewedRoutePoints}
+  }] : [];
 
- const savedFeatures=routes.filter(r=>r.points.length>1).map(r=>({
-  type:'Feature',
-  geometry:{type:'LineString',coordinates:r.points}
- }));
+  const savedFeatures = routes.filter(r=>r.points.length>1).map(r=>({
+    type:'Feature',
+    geometry:{type:'LineString',coordinates:r.points}
+  }));
 
- const areaFeatures=areas.map(a=>({
-  type:'Feature',
-  properties:{name:a.name},
-  geometry:{
-   type:'Polygon',
-   coordinates:[[...a.points,a.points[0]]]
-  }
- }));
+  const areaFeatures = areas.filter(a=>a.points && a.points.length>=3).map(a=>({
+    type:'Feature',
+    properties:{name:a.name},
+    geometry:{
+      type:'Polygon',
+      coordinates:[[...a.points,a.points[0]]]
+    }
+  }));
 
- const drawingFeatures=currentArea.length>1?[{
-  type:'Feature',
-  geometry:{
-   type:'LineString',
-   coordinates:currentArea
-  }
- }]:[];
+  const drawingFeatures = currentArea.length>1 ? [{
+    type:'Feature',
+    geometry:{type:'LineString',coordinates:currentArea}
+  }] : [];
 
- map.getSource('currentRoute')?.setData({
-  type:'FeatureCollection',features:currentFeature
- });
+  map.getSource('currentRoute')?.setData({
+    type:'FeatureCollection',features:currentFeature
+  });
 
- map.getSource('savedRoutes')?.setData({
-  type:'FeatureCollection',features:savedFeatures
- });
+  map.getSource('historyRoute')?.setData({
+    type:'FeatureCollection',features:historyFeature
+  });
 
- map.getSource('savedAreas')?.setData({
-  type:'FeatureCollection',features:areaFeatures
- });
+  map.getSource('savedRoutes')?.setData({
+    type:'FeatureCollection',features:savedFeatures
+  });
 
- map.getSource('drawingArea')?.setData({
-  type:'FeatureCollection',features:drawingFeatures
- });
+  map.getSource('savedAreas')?.setData({
+    type:'FeatureCollection',features:areaFeatures
+  });
+
+  map.getSource('drawingArea')?.setData({
+    type:'FeatureCollection',features:drawingFeatures
+  });
 }
 
 function changeMap(type) {
@@ -330,6 +347,7 @@ function startTracking() {
 
  tracking=true;
  points=[];
+ viewedRoutePoints=[];
  distance=0;
  startTime=Date.now();
 
@@ -354,7 +372,9 @@ function startTracking() {
   points.push(p);
   updateLayers();
 
+  if(viewedRoutePoints.length===0) {
   map.easeTo({center:p,zoom:16});
+}
 
   document.getElementById('status').innerText='Recording journey';
   document.getElementById('distance').innerText=
@@ -450,26 +470,39 @@ function cancelArea() {
 }
 
 function renderAreas() {
- const box=document.getElementById('areasList');
+  const box=document.getElementById('areasList');
 
- if(!areas.length) {
-  box.innerText='No saved areas yet.';
-  return;
- }
+  if(!areas.length) {
+    box.innerText='No saved areas yet.';
+    return;
+  }
 
- box.innerHTML='';
+  box.innerHTML='';
 
- areas.forEach((a,i)=>{
-  const item=document.createElement('div');
-  item.className='item';
-  const title=document.createElement('b');
-  title.textContent=a.name+' ';
-  const button=document.createElement('button');
-  button.textContent='DELETE';
-  button.onclick=()=>deleteArea(i);
-  item.append(title,button);
-  box.appendChild(item);
- });
+  areas.forEach((a,i)=>{
+    const item=document.createElement('div');
+    item.className='item';
+
+    const title=document.createElement('b');
+    title.textContent=a.name+' ';
+    title.style.cursor='pointer';
+
+    title.onclick=()=>{
+      const bounds=new maplibregl.LngLatBounds();
+
+      a.points.forEach(p=>bounds.extend(p));
+
+      map.fitBounds(bounds,{padding:60});
+      updateLayers();
+    };
+
+    const button=document.createElement('button');
+    button.textContent='DELETE';
+    button.onclick=()=>deleteArea(i);
+
+    item.append(title,button);
+    box.appendChild(item);
+  });
 }
 
 function deleteArea(i) {
@@ -480,50 +513,68 @@ function deleteArea(i) {
 }
 
 function renderHistory() {
- const box=document.getElementById('historyList');
+  const box=document.getElementById('historyList');
 
- if(!routes.length) {
-  box.innerText='No journeys recorded yet.';
-  return;
- }
+  if(!routes.length) {
+    box.innerText='No journeys recorded yet.';
+    return;
+  }
 
- box.innerHTML='';
+  box.innerHTML='';
 
- routes.forEach((r,i)=>{
-  const item=document.createElement('div');
-  item.className='item';
+  routes.forEach((r,i)=>{
+    const item=document.createElement('div');
+    item.className='item';
 
-  const title=document.createElement('b');
-  title.textContent='Journey '+(i+1);
+    const title=document.createElement('b');
+    title.textContent='Journey '+(i+1);
 
-  const detail=document.createElement('p');
-  detail.textContent=r.date+' | '+(r.distance/1000).toFixed(2)+' km';
+    const detail=document.createElement('p');
+    detail.textContent=r.date+' | '+(r.distance/1000).toFixed(2)+' km';
 
-  const view=document.createElement('button');
-  view.textContent='VIEW ROUTE';
-  view.onclick=()=>{
-   const bounds=new maplibregl.LngLatBounds();
-   r.points.forEach(p=>bounds.extend(p));
-   map.fitBounds(bounds,{padding:50});
-  };
+    const view=document.createElement('button');
+    view.textContent='VIEW ROUTE';
 
-  const del=document.createElement('button');
-  del.textContent='DELETE';
-  del.onclick=()=>{
-   routes.splice(i,1);
-   localStorage.setItem('fm_routes',JSON.stringify(routes));
-   renderHistory();
-   updateLayers();
-  };
+    view.onclick=()=>{
+      viewedRoutePoints=r.points;
+      updateLayers();
 
-  item.append(title,detail,view,del);
-  box.appendChild(item);
- });
+      const bounds=new maplibregl.LngLatBounds();
+      r.points.forEach(p=>bounds.extend(p));
+      map.fitBounds(bounds,{padding:50});
+    };
+
+    const closeHistory=document.createElement('button');
+    closeHistory.textContent='CLOSE HISTORY';
+
+    closeHistory.onclick=()=>{
+      viewedRoutePoints=[];
+      updateLayers();
+
+      if(points.length>1) {
+        const bounds=new maplibregl.LngLatBounds();
+        points.forEach(p=>bounds.extend(p));
+        map.fitBounds(bounds,{padding:50});
+      }
+    };
+
+    const del=document.createElement('button');
+    del.textContent='DELETE';
+
+    del.onclick=()=>{
+      routes.splice(i,1);
+      localStorage.setItem('fm_routes',JSON.stringify(routes));
+
+      if(viewedRoutePoints===r.points) viewedRoutePoints=[];
+
+      renderHistory();
+      updateLayers();
+    };
+
+    item.append(title,detail,view,closeHistory,del);
+    box.appendChild(item);
+  });
 }
-
-createMap();
-renderAreas();
-renderHistory();
 </script>
 
 </body>
